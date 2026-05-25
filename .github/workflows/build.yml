@@ -1,0 +1,63 @@
+name: 打包 Windows 应用
+
+on:
+  workflow_dispatch:  # 手动触发
+  push:
+    tags:
+      - 'v*'  # 推送标签时自动触发
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 设置 Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装 Python 依赖
+        run: |
+          pip install -r backend/requirements.txt
+
+      - name: 安装前端依赖
+        run: |
+          cd frontend
+          npm install
+
+      - name: 构建前端
+        run: |
+          cd frontend
+          npx vite build
+
+      - name: 安装根目录依赖
+        run: npm install
+
+      - name: 生成 ICO 图标
+        shell: python
+        run: |
+          from PIL import Image
+          img = Image.open('图片.png')
+          img = img.resize((256, 256), Image.LANCZOS)
+          import os
+          os.makedirs('build', exist_ok=True)
+          img.save('build/icon.ico', format='ICO', sizes=[(16,16), (32,32), (48,48), (64,64), (128,128), (256,256)])
+
+      - name: 打包 Windows 安装程序
+        run: npx electron-builder --win
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 上传安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: PDF翻译阅读器-Windows
+          path: release/*.exe
