@@ -33,11 +33,10 @@
     ],
     "extraResources": [
       {
-        "from": "backend",
+        "from": "backend/dist",
         "to": "backend",
         "filter": [
-          "**/*",
-          "!__pycache__/**"
+          "**/*"
         ]
       }
     ],

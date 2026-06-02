@@ -32,11 +32,50 @@ function getFrontendUrl() {
  * 启动 Python 后端
  */
 function startBackend() {
-  // 生产模式下，extraResources 解压到 process.resourcesPath
-  const backendDir = app.isPackaged
-    ? path.join(process.resourcesPath, 'backend')
-    : path.join(__dirname, '..', 'backend');
-  const mainPy = path.join(backendDir, 'main.py');
+  if (app.isPackaged) {
+    // 生产模式：启动 PyInstaller 编译好的 backend.exe
+    const backendExe = path.join(process.resourcesPath, 'backend', 'backend.exe');
+    console.log(`启动后端 exe: ${backendExe}`);
+
+    const proc = spawn(backendExe, [], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env },
+    });
+
+    proc.stdout.on('data', (data) => {
+      console.log(`[后端] ${data.toString().trim()}`);
+    });
+
+    proc.stderr.on('data', (data) => {
+      const msg = data.toString().trim();
+      console.log(`[后端] ${msg}`);
+      if (msg.includes('Uvicorn running') || msg.includes('Application startup complete') || msg.includes('启动') || msg.includes('8001')) {
+        onBackendReady();
+      }
+    });
+
+    proc.on('error', (err) => {
+      console.error(`后端 exe 启动失败: ${err.message}`);
+    });
+
+    proc.on('close', (code) => {
+      console.log(`后端进程退出 (code: ${code})`);
+      backendProcess = null;
+    });
+
+    backendProcess = proc;
+
+    // 超时后备
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.webContents.isLoading()) {
+        // 窗口已加载，无需操作
+      }
+    }, 10000);
+    return;
+  }
+
+  // 开发模式：使用 python 命令启动
+  const backendDir = path.join(__dirname, '..', 'backend');
 
   // 尝试多个 Python 命令
   const pythonCmds = ['python3', 'python3.12', 'python3.11', 'python', 'py -3'];

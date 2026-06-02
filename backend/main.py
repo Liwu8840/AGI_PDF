@@ -329,4 +329,4 @@ if __name__ == "__main__":
     # 自动寻找可用端口
     port = int(os.environ.get("PORT", 8001))
     print(f"[启动] API 服务: http://localhost:{port}", file=sys.stderr)
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
+    uvicorn.run(app, host="0.0.0.0", port=port, reload=False)

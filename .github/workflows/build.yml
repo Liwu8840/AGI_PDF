@@ -51,6 +51,12 @@ jobs:
           os.makedirs('build', exist_ok=True)
           img.save('build/icon.ico', format='ICO', sizes=[(16,16), (32,32), (48,48), (64,64), (128,128), (256,256)])
 
+      - name: 安装 PyInstaller
+        run: pip install pyinstaller
+
+      - name: 编译 Python 后端为 exe
+        run: pyinstaller backend/backend.spec --distpath backend/dist
+
       - name: 打包 Windows 安装程序
         run: npx electron-builder --win
         env:
