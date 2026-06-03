@@ -57,6 +57,77 @@ jobs:
       - name: 编译 Python 后端为 exe
         run: pyinstaller backend/backend.spec --distpath backend/dist
 
+      - name: 测试编译后的 exe 能正常启动
+        shell: python
+        env:
+          APP_RESOURCES_PATH: ${{ github.workspace }}\frontend\dist
+          APP_DATA_DIR: ${{ github.workspace }}\.test_data
+        run: |
+          import os, subprocess, time, json, urllib.request, urllib.error, sys
+
+          app_data = os.environ['APP_DATA_DIR']
+          resources = os.environ['APP_RESOURCES_PATH']
+          os.makedirs(app_data, exist_ok=True)
+
+          exe_path = os.path.join(os.getcwd(), 'backend', 'dist', 'backend', 'backend.exe')
+          if not os.path.exists(exe_path):
+              # 尝试其他可能的路径
+              alt = os.path.join(os.getcwd(), 'backend', 'dist', 'backend.exe')
+              if os.path.exists(alt):
+                  exe_path = alt
+              else:
+                  print(f'[FAIL] 找不到 backend.exe (搜索: {exe_path}, {alt})')
+                  sys.exit(1)
+          print(f'启动后端: {exe_path}')
+
+          env = os.environ.copy()
+          env['APP_RESOURCES_PATH'] = resources
+          env['APP_DATA_DIR'] = app_data
+
+          proc = subprocess.Popen([exe_path], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+          time.sleep(8)
+
+          if proc.poll() is not None:
+              stdout, stderr = proc.communicate()
+              print(f'[FAIL] 后端启动后立即退出 (code: {proc.returncode})')
+              print(f'stdout: {stdout.decode()}')
+              print(f'stderr: {stderr.decode()}')
+              sys.exit(1)
+
+          def test_api(method, url, body=None):
+              try:
+                  data = json.dumps(body).encode() if body else None
+                  req = urllib.request.Request(url, data=data, method=method)
+                  if body:
+                      req.add_header('Content-Type', 'application/json')
+                  resp = urllib.request.urlopen(req, timeout=10)
+                  result = json.loads(resp.read())
+                  print(f'[PASS] {method} {url}')
+                  return result
+              except Exception as e:
+                  print(f'[FAIL] {method} {url}: {e}')
+                  proc.kill()
+                  sys.exit(1)
+
+          test_api('GET', 'http://localhost:8001/api/pdf/list')
+          test_api('GET', 'http://localhost:8001/api/settings')
+          test_api('POST', 'http://localhost:8001/api/settings',
+                   {'LLM_API_KEY': 'ci-test-key', 'LLM_MODEL': 'ci-test-model'})
+
+          # 验证持久化
+          settings_file = os.path.join(app_data, 'settings.json')
+          if os.path.exists(settings_file):
+              with open(settings_file) as f:
+                  saved = json.load(f)
+              print(f'[PASS] 设置已持久化: LLM_API_KEY={saved.get("LLM_API_KEY")}')
+          else:
+              print(f'[FAIL] settings.json 未找到: {settings_file}')
+              proc.kill()
+              sys.exit(1)
+
+          print('所有 API 测试通过!')
+          proc.kill()
+
       - name: 打包 Windows 安装程序
         run: npx electron-builder --win
         env:
