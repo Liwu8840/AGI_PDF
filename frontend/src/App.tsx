@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { exportDocx, getCachedTranslations, getPageImage, listPDFs, parsePDF, translatePage, chatStream, getSettings, updateSettings, getPDFFileUrl } from './api'
+import { exportDocx, getCachedTranslations, getPageImage, listPDFs, parsePDF, translatePage, chatStream, getSettings, updateSettings, getPDFFileUrl, addPDFs } from './api'
 import { PDFViewer } from './components/PDFViewer'
 import { TranslationPanel } from './components/TranslationPanel'
 import { ChatBox } from './components/ChatBox'
@@ -316,6 +316,27 @@ export default function App() {
     }
   }
 
+  // 打开 PDF 文件（Electron 文件对话框）
+  async function handleOpenPDF() {
+    const api = (window as unknown as { electronAPI?: { openPDFDialog?: () => Promise<{ canceled: boolean; paths: string[] }> } }).electronAPI
+    if (!api?.openPDFDialog) {
+      showToast('文件对话框仅在桌面应用中可用', 'error')
+      return
+    }
+    try {
+      const result = await api.openPDFDialog()
+      if (result.canceled || result.paths.length === 0) return
+      const files = await addPDFs(result.paths)
+      setPdfFiles(files)
+      if (files.length > 0) {
+        await selectPDF(files[0].path)
+      }
+      showToast(`已添加 ${result.paths.length} 个 PDF 文件`, 'success')
+    } catch {
+      showToast('打开文件失败', 'error')
+    }
+  }
+
   return (
     <div className="h-full flex flex-col">
       {/* 顶部工具栏 */}
@@ -331,6 +352,14 @@ export default function App() {
               <option key={f.path} value={f.path}>{f.name}</option>
             ))}
           </select>
+          {/* 打开 PDF 按钮（Electron 文件对话框） */}
+          <button
+            className="text-sm px-2 py-1 rounded text-gray-600 hover:text-gray-800 hover:bg-gray-100"
+            onClick={handleOpenPDF}
+            title="选择 PDF 文件"
+          >
+            打开 PDF
+          </button>
         </div>
         <div className="flex items-center gap-2">
           {/* 文件信息 */}

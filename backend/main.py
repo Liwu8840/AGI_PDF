@@ -5,22 +5,48 @@ import os
 import sys
 from typing import Any, Dict, List, Optional
 
-from dotenv import load_dotenv, set_key
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-# ─── 翻译缓存 ───
-CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "translations_cache")
+# ─── 路径检测：开发模式 vs PyInstaller 打包模式 ───
+_IS_FROZEN = getattr(sys, 'frozen', False)
+
+def _get_app_data_dir() -> str:
+    """获取应用数据目录（用于缓存和配置）"""
+    if os.environ.get("APP_DATA_DIR"):
+        return os.environ["APP_DATA_DIR"]
+    home = os.path.expanduser("~")
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA", os.path.join(home, "AppData", "Roaming"))
+        data_dir = os.path.join(appdata, "PDF翻译阅读器")
+    elif sys.platform == "darwin":
+        data_dir = os.path.join(home, "Library", "Application Support", "PDF翻译阅读器")
+    else:
+        data_dir = os.path.join(home, ".config", "pdf-translator")
+    os.makedirs(data_dir, exist_ok=True)
+    return data_dir
+
+def _get_resources_dir() -> str:
+    """获取资源目录（frontend/dist 所在位置）"""
+    if _IS_FROZEN:
+        return os.environ.get("APP_RESOURCES_PATH", os.path.dirname(sys.executable))
+    # 开发模式：项目根目录
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+APP_DATA_DIR = _get_app_data_dir()
+RESOURCES_DIR = _get_resources_dir()
+CACHE_DIR = os.path.join(APP_DATA_DIR, "translations_cache")
+SETTINGS_PATH = os.path.join(APP_DATA_DIR, "settings.json")
+FRONTEND_DIST = os.path.join(RESOURCES_DIR, "frontend")
 
 def _get_cache_path(pdf_path: str) -> str:
     """根据 PDF 路径生成唯一的缓存文件路径"""
     os.makedirs(CACHE_DIR, exist_ok=True)
     name = os.path.splitext(os.path.basename(pdf_path))[0]
     path_hash = hashlib.md5(pdf_path.encode()).hexdigest()[:8]
-    # 清理文件名中的特殊字符
     safe_name = "".join(c if c.isalnum() or c in " _-" else "_" for c in name)
     return os.path.join(CACHE_DIR, f"{safe_name}_{path_hash}.json")
 
@@ -40,21 +66,46 @@ def _save_translation_to_cache(pdf_path: str, page_num: int, translation: str):
             cache = json.load(f)
     else:
         cache = {"pdf_path": pdf_path, "translations": {}}
-
     cache["translations"][str(page_num)] = translation
     with open(cache_path, "w", encoding="utf-8") as f:
         json.dump(cache, f, ensure_ascii=False, indent=2)
+
+def _load_settings() -> Dict[str, str]:
+    """从 JSON 文件加载配置"""
+    if os.path.exists(SETTINGS_PATH):
+        try:
+            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def _save_settings(settings: Dict[str, str]):
+    """保存配置到 JSON 文件"""
+    os.makedirs(os.path.dirname(SETTINGS_PATH), exist_ok=True)
+    with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+        json.dump(settings, f, ensure_ascii=False, indent=2)
 
 from pdf_parser import extract_page_image, page_to_markdown, parse_pdf
 from translator import chat_stream, translate_page_by_image, translate_page_markdown, translate_text
 from export_pdf import generate_translated_pdf
 from export_docx import generate_translated_docx
 
-# 加载 .env（从项目根目录）
-ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
-load_dotenv(ENV_PATH)
-
 app = FastAPI(title="PDF 翻译阅读器")
+
+# 开发模式：加载 .env 作为配置后备
+if not _IS_FROZEN:
+    try:
+        from dotenv import load_dotenv
+        _env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+        load_dotenv(_env_path)
+    except ImportError:
+        pass
+
+# 启动时将已保存的设置加载到环境变量（translator.py 等模块使用 os.getenv）
+_loaded_settings = _load_settings()
+for key, value in _loaded_settings.items():
+    os.environ[key] = value
 
 app.add_middleware(
     CORSMiddleware,
@@ -82,14 +133,52 @@ class ChatRequest(BaseModel):
 
 @app.get("/api/pdf/list")
 def list_pdfs():
-    """列出项目目录下的所有 PDF 文件"""
-    project_dir = os.path.dirname(os.path.dirname(__file__))
+    """列出项目目录下的所有 PDF 文件（开发模式扫描目录，生产模式仅返回已添加的文件）"""
     pdfs = []
-    for f in os.listdir(project_dir):
-        if f.lower().endswith(".pdf"):
-            full_path = os.path.join(project_dir, f)
-            pdfs.append({"name": f, "path": full_path})
+    if not _IS_FROZEN:
+        # 开发模式：扫描项目根目录
+        project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for f in os.listdir(project_dir):
+            if f.lower().endswith(".pdf"):
+                full_path = os.path.join(project_dir, f)
+                pdfs.append({"name": f, "path": full_path})
+    # 生产模式：从会话记录中读取（通过其他接口添加）
+    session_path = os.path.join(APP_DATA_DIR, "session_pdfs.json")
+    if os.path.exists(session_path):
+        try:
+            with open(session_path, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            for item in saved:
+                if item not in pdfs and os.path.exists(item.get("path", "")):
+                    pdfs.append(item)
+        except Exception:
+            pass
     return {"files": pdfs}
+
+
+@app.post("/api/pdf/add")
+def add_pdf(body: dict):
+    """添加 PDF 文件到会话记录（Electron 文件对话框选择后调用）"""
+    paths = body.get("paths", [])
+    if not paths:
+        raise HTTPException(status_code=400, detail="路径不能为空")
+    session_path = os.path.join(APP_DATA_DIR, "session_pdfs.json")
+    existing = []
+    if os.path.exists(session_path):
+        try:
+            with open(session_path, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+        except Exception:
+            pass
+    existing_paths = {e["path"] for e in existing}
+    for p in paths:
+        if p not in existing_paths and os.path.exists(p):
+            existing.append({"name": os.path.basename(p), "path": p})
+            existing_paths.add(p)
+    os.makedirs(os.path.dirname(session_path), exist_ok=True)
+    with open(session_path, "w", encoding="utf-8") as f:
+        json.dump(existing, f, ensure_ascii=False, indent=2)
+    return {"files": existing}
 
 
 @app.get("/api/pdf/parse")
@@ -199,22 +288,23 @@ def get_page_image(path: str = Query(...), page: int = Query(1)):
 @app.get("/api/settings")
 def get_settings():
     """获取当前配置"""
+    settings = _load_settings()
     keys = ["PDF_PATH", "LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL", "LLM_TEMPERATURE"]
-    settings = {}
     for key in keys:
-        settings[key] = os.getenv(key, "")
+        if key not in settings:
+            settings[key] = os.getenv(key, "")
     return settings
 
 
 @app.post("/api/settings")
 def update_settings(body: dict):
-    """更新配置并写入 .env 文件"""
+    """更新配置并写入 JSON 文件"""
+    settings = _load_settings()
     for key, value in body.items():
         if value is not None and isinstance(value, str):
-            set_key(ENV_PATH, key, value)
+            settings[key] = value
             os.environ[key] = value
-    # 重新加载环境变量
-    load_dotenv(ENV_PATH, override=True)
+    _save_settings(settings)
     return {"status": "ok"}
 
 
@@ -318,10 +408,13 @@ def export_docx(body: dict):
 
 
 # 挂载前端静态文件（API 路由优先）
-FRONTEND_DIST = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")
-if os.path.isdir(FRONTEND_DIST):
-    app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
-    print(f"[启动] 前端静态文件已挂载: {FRONTEND_DIST}", file=sys.stderr)
+FRONTEND_DIST_DIR = os.path.join(FRONTEND_DIST, "dist")
+if _IS_FROZEN:
+    # 生产模式：extraResources 把 frontend/dist/* 解压到 resources/frontend/
+    FRONTEND_DIST_DIR = FRONTEND_DIST
+if os.path.isdir(FRONTEND_DIST_DIR):
+    app.mount("/", StaticFiles(directory=FRONTEND_DIST_DIR, html=True), name="frontend")
+    print(f"[启动] 前端静态文件已挂载: {FRONTEND_DIST_DIR}", file=sys.stderr)
 
 
 if __name__ == "__main__":

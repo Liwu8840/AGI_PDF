@@ -147,3 +147,14 @@ export async function exportDocx(path: string): Promise<void> {
   })
   if (!res.ok) throw new Error('导出 DOCX 失败')
 }
+
+export async function addPDFs(paths: string[]): Promise<PDFFile[]> {
+  const res = await fetch(`${BASE}/api/pdf/add`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paths }),
+  })
+  if (!res.ok) throw new Error('添加 PDF 失败')
+  const data = await res.json()
+  return data.files
+}

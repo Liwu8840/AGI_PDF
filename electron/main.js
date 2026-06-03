@@ -4,7 +4,7 @@
  * - 等待后端就绪后打开窗口
  * - 支持开发模式（Vite）和生产模式（静态文件）
  */
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const http = require('http');
@@ -39,7 +39,11 @@ function startBackend() {
 
     const proc = spawn(backendExe, [], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env },
+      env: {
+        ...process.env,
+        APP_RESOURCES_PATH: process.resourcesPath,
+        APP_DATA_DIR: path.join(app.getPath('userData'), 'data'),
+      },
     });
 
     proc.stdout.on('data', (data) => {
@@ -221,6 +225,17 @@ async function createWindow() {
 app.whenReady().then(() => {
   createWindow();
   startBackend();
+
+  // IPC：打开文件对话框选择 PDF
+  ipcMain.handle('dialog:openPDF', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '选择 PDF 文件',
+      filters: [{ name: 'PDF 文件', extensions: ['pdf'] }],
+      properties: ['openFile', 'multiSelections'],
+    });
+    if (result.canceled) return { canceled: true, paths: [] };
+    return { canceled: false, paths: result.filePaths };
+  });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

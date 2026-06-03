@@ -28,13 +28,19 @@
       "output": "release"
     },
     "files": [
-      "electron/**/*",
-      "frontend/dist/**/*"
+      "electron/**/*"
     ],
     "extraResources": [
       {
         "from": "backend/dist",
         "to": "backend",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "frontend/dist",
+        "to": "frontend",
         "filter": [
           "**/*"
         ]
